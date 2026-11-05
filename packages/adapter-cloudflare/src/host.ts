@@ -11648,18 +11648,25 @@ export class CloudflareScopeHost implements ScopeHost {
     // the directory instead, where the checker reads them from (`cp.tenantTuples`). Read
     // only the DO and a tenant-wide grant would be reported absent on exactly the
     // deployments that have a control plane — the fleet — while being enforced.
-    const rows = [
-      ...(await this.scopeStub(scopeId).listConnectionGrants(now)),
-      ...(await this.cp.dumpTenantTuples(tenantId))
-        .filter(
-          (r) =>
-            r.subject.startsWith('connection:') &&
-            r.relation.startsWith('granted:') &&
-            r.revoked_at === null &&
-            (r.expires_at === null || r.expires_at > now),
-        )
-        .map((r) => ({ subject: r.subject, relation: r.relation, expires_at: r.expires_at })),
-    ];
+    //
+    // And only the DO on a CP-less host: it HAS no directory, and `this.cp` throws on the
+    // read. Asked anyway, that throw was the answer the connector landing pass got from
+    // every hosted vertical (`LandingPass.apply` → `grantsIn`, delegated here through
+    // `/internal/connector-grants`), so the pass failed before granting and no declared
+    // landing ever landed on a CP-less deployment.
+    const scopeRows = await this.scopeStub(scopeId).listConnectionGrants(now);
+    const directoryRows = this.cpLess
+      ? []
+      : (await this.cp.dumpTenantTuples(tenantId))
+          .filter(
+            (r) =>
+              r.subject.startsWith('connection:') &&
+              r.relation.startsWith('granted:') &&
+              r.revoked_at === null &&
+              (r.expires_at === null || r.expires_at > now),
+          )
+          .map((r) => ({ subject: r.subject, relation: r.relation, expires_at: r.expires_at }));
+    const rows = [...scopeRows, ...directoryRows];
     // One tuple per (connection, permission) however many stores answered.
     const seen = new Set<string>();
     return rows

@@ -125,6 +125,31 @@ describe('connector write-back (#574)', () => {
       ).rejects.toThrow(/denied/i);
     });
 
+    it('answers the grants it holds from its own tuples — a CP-less host has no directory to ask', async () => {
+      // What the connector landing pass reads before it grants (`LandingPass.apply` → `grantsIn`),
+      // delegated to the serving deployment through `/internal/connector-grants`. It used to read
+      // the tenant directory unconditionally, and on this host `this.cp` throws on that read — so
+      // every hosted vertical failed the read, the key was never granted, and no declared landing
+      // ever landed. On this shape the tenant-level grants are projected into the DO, so the DO is
+      // the whole answer, under the same expiry and tombstone rules the checker applies.
+      const host = hostFor();
+      const live = connectionIdOf.parse(ulid());
+      const expired = connectionIdOf.parse(ulid());
+      const revoked = connectionIdOf.parse(ulid());
+      const until = new Date(Date.now() + 60_000).toISOString();
+      await host.connectorGrantLocal(live, s, READ, until);
+      await host.connectorGrantLocal(expired, s, READ, new Date(Date.now() - 60_000).toISOString());
+      await host.connectorGrantLocal(revoked, s, READ);
+      await host.connectorRevokeLocal(revoked, s, READ);
+
+      const grants = await host.connectionGrantsInScope(t, s);
+      expect(grants).toContainEqual({ connectionId: live, permission: READ, expiresAt: until });
+      expect(grants).toContainEqual({ connectionId: conn, permission: USE });
+      const ids = grants.map((g) => g.connectionId);
+      expect(ids).not.toContain(expired);
+      expect(ids).not.toContain(revoked);
+    });
+
     it('lands connector bytes gated by the same tuple, createdBy = the connection', async () => {
       const host = hostFor();
       const rec = await host.connectorAttachmentUploadLocal(conn, t, s, {
